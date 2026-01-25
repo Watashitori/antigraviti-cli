@@ -67,15 +67,10 @@ func (s *Store) Load() error {
 	}
 
 	// Decrypt sensitive data for all profiles
-	// We need to iterate and update the map because Profile is a value type in the map
 	for name, p := range s.Profiles {
 		if len(p.EncryptedBlob) > 0 {
 			decrypted, err := security.Decrypt(p.EncryptedBlob)
 			if err != nil {
-				// Log error but maybe continue? Or fail?
-				// For now, let's just create an empty SensitiveData or return error.
-				// Returning error might lock the user out if one profile is corrupted.
-				// Let's print to stderr or just ignore (fields will be empty).
 				continue
 			}
 
@@ -92,34 +87,14 @@ func (s *Store) Load() error {
 	return nil
 }
 
-
-
 func (s *Store) AddProfile(p Profile) error {
 	s.mu.Lock()
-	defer s.mu.Unlock() // Use defer for safety
+	defer s.mu.Unlock()
 	
-	// Ensure ID is set
-	if p.ID == "" {
-		// p.ID = uuid.NewString() // Need uuid? Or just use Name? User didn't specify.
-		// Let's leave ID empty or set it to Name if missing for now, or assume caller sets it.
-	}
-
 	s.Profiles[p.Name] = p
-	// We call Save(), which handles encryption
-	// Unlock is deferred, but Save acquires RLock. RLock inside Lock? 
-	// Save uses RLock. We have Lock. RLocking while holding Lock is fine? No, it might deadlock or be undefined depending on mutex implementation.
-	// `sync.RWMutex`: "If a goroutine holds a RWMutex for reading and another goroutine might call Lock, no goroutine should expect to be able to acquire a read lock until the initial read lock is released."
-	// Actually: "If a goroutine holds a RWMutex for writing, it is not allowed to call RLock." -> Deadlock!
-	
-	// So we cannot call s.Save() inside AddProfile if s.Save() locks everything.
-	// We need an internal save helper or unlock before saving.
-	
 	return s.saveNoLock()
 }
 
-// saveNoLock saves without locking, assumes caller holds the lock (Read or Write? Save needs to read profiles).
-// The caller of saveNoLock (AddProfile) holds a Write Lock.
-// saveNoLock needs to read profiles. Since we have a Write Lock, we can read.
 func (s *Store) saveNoLock() error {
 	profilesToSave := make(map[string]Profile)
 
@@ -157,22 +132,15 @@ func (s *Store) saveNoLock() error {
 	return os.WriteFile(s.path, data, 0644)
 }
 
-// Public Save method (if needed externally)
 func (s *Store) Save() error {
-	s.mu.Lock() // Use Lock because we might be updating EncryptedBlobs in a way (conceptually we are snapshotting)
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveNoLock()
 }
-
 
 func (s *Store) GetProfile(name string) (Profile, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.Profiles[name]
-	// p is already decrypted during Load(). 
-	// Wait, Load() runs once. What if we add a profile? AddProfile updates s.Profiles[p.Name] = p.
-	// If p passed to AddProfile has plain tokens (which it likely does), then s.Profiles has plain tokens.
-	// Save() encrypts them for disk.
-	// So GetProfile just returns what's in memory.
 	return p, ok
 }

@@ -118,6 +118,11 @@ var connectCmd = &cobra.Command{
 
 		fmt.Println("Antigravity launched via tunnel. Press Ctrl+C to stop.")
 
+		// Save active profile state
+		if err := config.SetActiveProfileName(profileName); err != nil {
+			log.Printf("Warning: Failed to save active profile state: %v", err)
+		}
+
 		// 8. Wait for signal
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
