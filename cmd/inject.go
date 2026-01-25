@@ -13,7 +13,7 @@ import (
 var injectCmd = &cobra.Command{
 	Use:   "inject",
 	Short: "Inject a cloud token into Antigravity IDE",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		email, _ := cmd.Flags().GetString("email")
 		name, _ := cmd.Flags().GetString("name")
 		accessToken, _ := cmd.Flags().GetString("token")
@@ -21,7 +21,7 @@ var injectCmd = &cobra.Command{
 		kill, _ := cmd.Flags().GetBool("kill")
 
 		if accessToken == "" {
-			log.Fatal("Access token is required")
+			return fmt.Errorf("access token is required")
 		}
 
 		if kill {
@@ -42,10 +42,11 @@ var injectCmd = &cobra.Command{
 		
 		err := injection.InjectIdentity(dbPath, accessToken, refreshToken, email, name)
 		if err != nil {
-			log.Fatalf("Injection failed: %v", err)
+			return fmt.Errorf("injection failed: %v", err)
 		}
 
 		fmt.Println("Successfully injected cloud token!")
+		return nil
 	},
 }
 

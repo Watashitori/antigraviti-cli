@@ -11,15 +11,16 @@ import (
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync account from Antigravity IDE",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("Syncing from IDE...")
 		account, err := injection.SyncFromIDE()
 		if err != nil {
-			log.Fatalf("Sync failed: %v", err)
+			return fmt.Errorf("sync failed: %v", err)
 		}
 
 		fmt.Printf("found account: %s (%s)\n", account.Email, account.Name)
 		fmt.Printf("token: %s...\n", account.AccessToken[:10])
+		return nil
 	},
 }
 

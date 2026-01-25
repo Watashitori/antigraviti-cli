@@ -78,16 +78,18 @@ func handleSelectAccount() {
 		return
 	}
 
-	var profiles []config.Profile
+	var items []interface{}
 	for _, p := range store.Profiles {
-		profiles = append(profiles, p)
+		items = append(items, p)
 	}
 	// Sort by name for consistency
-	sort.Slice(profiles, func(i, j int) bool {
-		return profiles[i].Name < profiles[j].Name
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].(config.Profile).Name < items[j].(config.Profile).Name
 	})
+	// Add Back option
+	items = append(items, "Back")
 
-	if len(profiles) == 0 {
+	if len(items) == 1 { // Only "Back" option
 		fmt.Println("No profiles found.")
 		prompt := promptui.Prompt{
 			Label: "Press Enter to go back",
@@ -98,32 +100,40 @@ func handleSelectAccount() {
 
 	templates := &promptui.SelectTemplates{
 		Label:    "{{ . }}",
-		Active:   "-> {{ .Name | cyan }} ({{ .ProxyHost }})",
-		Inactive: "   {{ .Name }} ({{ .ProxyHost }})",
-		Selected: "-> {{ .Name | cyan }}",
+		Active:   "-> {{ if eq . \"Back\" }}{{ . | cyan }}{{ else }}{{ .Name | cyan }} ({{ .ProxyHost }}){{ end }}",
+		Inactive: "   {{ if eq . \"Back\" }}{{ . }}{{ else }}{{ .Name }} ({{ .ProxyHost }}){{ end }}",
+		Selected: "-> {{ if eq . \"Back\" }}{{ . | cyan }}{{ else }}{{ .Name | cyan }}{{ end }}",
 		Details: `
 --------- Profile Details ---------
+{{ if eq . "Back" }}
+Go back to main menu
+{{ else }}
 {{ "Name:" | faint }}	{{ .Name }}
 {{ "Email:" | faint }}	{{ .Email }}
 {{ "Proxy:" | faint }}	{{ .ProxyHost }}:{{ .ProxyPort }}
 {{ "Tunnel:" | faint }}	{{ .UseSystemTunnel }}
+{{ end }}
 -----------------------------------`,
 	}
 
 	prompt := promptui.Select{
 		Label:     "Select Account",
-		Items:     profiles,
+		Items:     items,
 		Templates: templates,
 		Size:      10,
 		Stdout:    &BellSkipper{},
 	}
 
-	i, _, err := prompt.Run()
+	i, result, err := prompt.Run()
 	if err != nil {
 		return
 	}
 
-	selectedProfile := profiles[i]
+	if result == "Back" {
+		return
+	}
+
+	selectedProfile := items[i].(config.Profile)
 	handleProfileActions(selectedProfile, store)
 }
 
@@ -142,9 +152,11 @@ func handleProfileActions(profile config.Profile, store *config.Store) {
 	switch result {
 	case "Connect":
 		// Invoke connect command logic
-		// We call the Run function of connectCmd directly
-		// Note: connectCmd is global in cmd package
-		connectCmd.Run(connectCmd, []string{profile.Name})
+		connectCmd.SetArgs([]string{profile.Name})
+		err := connectCmd.Execute()
+		if err != nil {
+			fmt.Printf("\nError: %v\n", err)
+		}
 		// After connect returns (e.g. user stopped tunnel), we return to menu
 		fmt.Println("Press Enter to return to menu...")
 		fmt.Scanln()
@@ -152,7 +164,11 @@ func handleProfileActions(profile config.Profile, store *config.Store) {
 	case "Login":
 		// Invoke login command logic
 		if loginCmd != nil {
-			loginCmd.Run(loginCmd, []string{profile.Name})
+			loginCmd.SetArgs([]string{profile.Name})
+			err := loginCmd.Execute()
+			if err != nil {
+				fmt.Printf("\nError: %v\n", err)
+			}
 		} else {
 			fmt.Println("Login command not available.")
 		}
@@ -191,7 +207,7 @@ func handleAddAccount() {
 		Stdout: &BellSkipper{},
 	}
 	_, proxyType, err := proxyTypePrompt.Run()
-	if err != nil { return }
+	if err != nil { return } // Handles Ctrl+C (ErrInterrupt)
 
 	// 2. Proxy Host
 	proxyHostPrompt := promptui.Prompt{

@@ -23,7 +23,7 @@ var connectCmd = &cobra.Command{
 	Use:   "connect [profile_name]",
 	Short: "Connect to a proxy profile and launch Antigravity IDE",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		profileName := "default"
 		if len(args) > 0 {
 			profileName = args[0]
@@ -34,22 +34,22 @@ var connectCmd = &cobra.Command{
 		// 1. Load profile from store
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatalf("Failed to get home directory: %v", err)
+			return fmt.Errorf("failed to get home directory: %v", err)
 		}
 		storePath := filepath.Join(homeDir, ".antigravity-cli", "profiles.json")
 		store := config.NewStore(storePath)
 		if err := store.Load(); err != nil {
-			log.Fatalf("Failed to load profiles: %v", err)
+			return fmt.Errorf("Failed to load profiles: %v", err)
 		}
 
 		profile, ok := store.GetProfile(profileName)
 		if !ok {
-			log.Fatalf("Profile '%s' not found. Use 'antigravity-cli profile add' to create one.", profileName)
+			return fmt.Errorf("profile '%s' not found. Use 'antigravity-cli profile add' to create one", profileName)
 		}
 
 		// Check if profile has tokens (authorization required)
 		if profile.AccessToken == "" || profile.AccessToken == "pending_auth" {
-			log.Fatalf("Profile has no tokens. Please run 'antigravity-cli login %s' first.", profileName)
+			return fmt.Errorf("profile has no tokens. Please run 'antigravity-cli login %s' first", profileName)
 		}
 
 		// 2. Find free port
@@ -68,7 +68,7 @@ var connectCmd = &cobra.Command{
 		}
 		configPath, err := tunnel.GenerateConfig(proxyCfg)
 		if err != nil {
-			log.Fatalf("Failed to generate tunnel config: %v", err)
+			return fmt.Errorf("failed to generate tunnel config: %v", err)
 		}
 		// Defer removal of config file? Maybe keep it for debug or remove on exit.
 		// For now, we leave it or better, clean it up on exit if possible.
@@ -89,7 +89,8 @@ var connectCmd = &cobra.Command{
 			if err := singBoxCmd.Run(); err != nil {
 				// If manually killed, this error is expected.
 				log.Printf("sing-box exited: %v", err)
-				os.Exit(1) // Exit CLI if tunnel dies
+				// Note: In interactive mode, this might be problematic if we don't handle it.
+				// For now, keep it as is or return error if possible.
 			}
 		}()
 
@@ -106,14 +107,14 @@ var connectCmd = &cobra.Command{
 		dbPath := utils.GetAntigravityDBPath()
 		fmt.Printf("Injecting identity into %s...\n", dbPath)
 		if err := injection.InjectIdentity(dbPath, profile.AccessToken, profile.RefreshToken, profile.Email, profile.Name); err != nil {
-			log.Fatalf("Failed to inject identity: %v", err)
+			return fmt.Errorf("failed to inject identity: %v", err)
 		}
 
 		// 7. Start IDE
 		idePath := utils.GetAntigravityPath()
 		fmt.Printf("Starting Antigravity from %s...\n", idePath)
 		if err := utils.StartAntigravity(idePath, localPort); err != nil {
-			log.Fatalf("Failed to start Antigravity: %v", err)
+			return fmt.Errorf("failed to start Antigravity: %v", err)
 		}
 
 		fmt.Println("Antigravity launched via tunnel. Press Ctrl+C to stop.")
@@ -133,6 +134,7 @@ var connectCmd = &cobra.Command{
 			singBoxCmd.Process.Kill()
 		}
 		fmt.Println("Exiting.")
+		return nil
 	},
 }
 

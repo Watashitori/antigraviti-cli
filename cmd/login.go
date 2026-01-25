@@ -21,23 +21,23 @@ var loginCmd = &cobra.Command{
 This will open your browser for Google login, then capture the tokens
 and save them encrypted to the profile.`,
 	Args: cobra.ExactArgs(1),
-	Run:  runLogin,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runLogin(cmd, args)
+	},
 }
 
-func runLogin(cmd *cobra.Command, args []string) {
+func runLogin(cmd *cobra.Command, args []string) error {
 	profileName := args[0]
 
 	// Load the store and get the profile
 	store, err := getStore()
 	if err != nil {
-		fmt.Printf("Error loading store: %v\n", err)
-		return
+		return fmt.Errorf("error loading store: %v", err)
 	}
 
 	profile, exists := store.GetProfile(profileName)
 	if !exists {
-		fmt.Printf("Profile '%s' not found. Use 'antigravity profile add' to create one first.\n", profileName)
-		return
+		return fmt.Errorf("profile '%s' not found. Use 'antigravity profile add' to create one first", profileName)
 	}
 
 	// Channel to receive the authorization code
@@ -96,13 +96,11 @@ func runLogin(cmd *cobra.Command, args []string) {
 	case authCode = <-codeChan:
 		// Success, continue
 	case err := <-errChan:
-		fmt.Printf("Error: %v\n", err)
 		shutdownServer(server)
-		return
+		return fmt.Errorf("error: %v", err)
 	case <-time.After(5 * time.Minute):
-		fmt.Println("Error: Authentication timed out after 5 minutes")
 		shutdownServer(server)
-		return
+		return fmt.Errorf("error: authentication timed out after 5 minutes")
 	}
 
 	// Shutdown the server
@@ -112,8 +110,7 @@ func runLogin(cmd *cobra.Command, args []string) {
 	fmt.Println("Exchanging authorization code for tokens...")
 	tokenResp, err := auth.ExchangeCode(authCode)
 	if err != nil {
-		fmt.Printf("Error exchanging code: %v\n", err)
-		return
+		return fmt.Errorf("error exchanging code: %v", err)
 	}
 
 	// Get user info to verify email
@@ -139,11 +136,11 @@ func runLogin(cmd *cobra.Command, args []string) {
 	// Save the updated profile
 	store.Profiles[profileName] = profile
 	if err := store.Save(); err != nil {
-		fmt.Printf("Error saving tokens: %v\n", err)
-		return
+		return fmt.Errorf("error saving tokens: %v", err)
 	}
 
 	fmt.Println("\n✓ Login successful! Tokens have been saved and encrypted.")
+	return nil
 }
 
 func openBrowser(url string) error {
