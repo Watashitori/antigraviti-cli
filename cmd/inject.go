@@ -4,7 +4,6 @@ import (
 	"antigravity-cli/internal/injection"
 	"antigravity-cli/internal/utils"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,13 +24,6 @@ var injectCmd = &cobra.Command{
 		}
 
 		if kill {
-			// Try to kill process first
-			// IsProcessRunning didn't exist in utils/process.go view earlier?
-			// Let's check process.go content again or just call KillAntigravity directly which calls taskkill/pkill.
-			// The previous inject.go used utils.IsProcessRunning() and utils.KillProcess().
-			// But utils/process.go only has KillAntigravity and StartAntigravity?
-			// Let's check process.go again.
-			// If they don't exist, I should use KillAntigravity.
 			fmt.Println("Killing Antigravity process...")
 			utils.KillAntigravity()
 			time.Sleep(1 * time.Second)

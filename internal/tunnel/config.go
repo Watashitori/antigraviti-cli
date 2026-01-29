@@ -7,10 +7,9 @@ import (
 	"text/template"
 )
 
-// ProxyConfig holds all configuration parameters for sing-box config generation
 type ProxyConfig struct {
 	ListenPort      int
-	ProxyType       string // "socks" or "http"
+	ProxyType       string
 	ProxyHost       string
 	ProxyPort       int
 	ProxyUser       string
@@ -19,13 +18,25 @@ type ProxyConfig struct {
 }
 
 const configTemplate = `{
-  "log": { "level": "error", "timestamp": true },
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
   "dns": {
     "servers": [
-      { "tag": "remote-dns", "address": "8.8.8.8", "detour": "profile-proxy" }
+      {
+        "tag": "google-dns",
+        "address": "8.8.8.8",
+        "detour": "profile-proxy"
+      }
     ],
-    "rules": [],
-    "final": "remote-dns"
+    "rules": [
+      {
+        "outbound": "any",
+        "server": "google-dns"
+      }
+    ],
+    "final": "google-dns"
   },
   "inbounds": [
     {
@@ -43,15 +54,8 @@ const configTemplate = `{
       "server": "{{.ProxyHost}}",
       "server_port": {{.ProxyPort}}{{if .ProxyUser}},
       "username": "{{.ProxyUser}}",
-      "password": "{{.ProxyPass}}"{{end}}{{if .UseSystemTunnel}},
-      "detour": "system-tunnel"{{end}}
-    },{{if .UseSystemTunnel}}
-    {
-      "type": "socks",
-      "tag": "system-tunnel",
-      "server": "127.0.0.1",
-      "server_port": 10808
-    },{{end}}
+      "password": "{{.ProxyPass}}"{{end}}
+    },
     {
       "type": "direct",
       "tag": "direct-out"
@@ -72,10 +76,7 @@ const configTemplate = `{
   }
 }`
 
-// GenerateConfig creates a Sing-box JSON configuration based on the provided ProxyConfig.
-// It writes the configuration to a temporary file and returns the file path.
 func GenerateConfig(cfg ProxyConfig) (string, error) {
-	// Normalize proxy type
 	proxyType := cfg.ProxyType
 	if proxyType == "socks5" {
 		proxyType = "socks"
@@ -92,7 +93,6 @@ func GenerateConfig(cfg ProxyConfig) (string, error) {
 		return "", fmt.Errorf("failed to execute config template: %w", err)
 	}
 
-	// Create temp file
 	tmpFile, err := os.CreateTemp("", "singbox_config_*.json")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)

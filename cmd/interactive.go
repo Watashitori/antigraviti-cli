@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"antigravity-cli/internal/config"
+	"antigravity-cli/internal/session"
+	"bufio"
 	"errors"
 	"fmt"
 	"log"
@@ -9,8 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
+	"text/template"
+	"time"
 
 	"github.com/manifoldco/promptui"
 )
@@ -25,9 +30,43 @@ const asciiHeader = `                _   _                       _ _            
                       |___/                       |___/                        
 `
 
+var debugLogger *log.Logger
+
+func init() {
+	home, _ := os.UserHomeDir()
+	logPath := filepath.Join(home, "antigravity_debug.log")
+	
+	f, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("FAILED TO CREATE LOG: %v\n", err)
+		return
+	}
+	debugLogger = log.New(f, "TUI: ", log.LstdFlags)
+	debugLogger.Printf("---- Session Started ----")
+	fmt.Printf("Debug log: %s\n", logPath)
+}
+
+// waitUser делает надежную паузу
+func waitUser() {
+	fmt.Println("\nPress 'Enter' to continue...")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+}
+
 func runInteractiveMenu() {
+	defer func() {
+		if r := recover(); r != nil {
+			if debugLogger != nil {
+				debugLogger.Printf("PANIC: %v\nStack: %s", r, string(debug.Stack()))
+			}
+			fmt.Printf("CRASH: %v\n", r)
+			// Wait unconditionally on panic
+			time.Sleep(20 * time.Second)
+		}
+	}()
+
 	for {
-		clearScreen()
+		// clearScreen() REMOVED FOR DEBUGGING
 		fmt.Print(asciiHeader)
 		active := config.GetActiveProfileName()
 		if active == "" {
@@ -50,8 +89,16 @@ func runInteractiveMenu() {
 		_, result, err := prompt.Run()
 		if err != nil {
 			if err == promptui.ErrInterrupt {
+				if debugLogger != nil {
+					debugLogger.Println("Exiting due to interrupt/EOF")
+				}
 				os.Exit(0)
 			}
+			if debugLogger != nil {
+				debugLogger.Printf("Prompt error: %v", err)
+			}
+			fmt.Printf("Prompt error: %v\n", err)
+			waitUser()
 			return
 		}
 
@@ -66,54 +113,68 @@ func runInteractiveMenu() {
 	}
 }
 
+// menuItem - обертка для красивого отображения в меню
+type menuItem struct {
+	Label   string
+	Profile config.Profile
+	IsBack  bool
+}
+
 func handleSelectAccount() {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("Error getting home dir: %v", err)
+		waitUser()
 		return
 	}
 	store := config.NewStore(filepath.Join(homeDir, ".antigravity-cli", "profiles.json"))
 	if err := store.Load(); err != nil {
 		log.Printf("Error loading profiles: %v", err)
+		waitUser()
 		return
 	}
 
-	var items []interface{}
+	var profiles []config.Profile
 	for _, p := range store.Profiles {
-		items = append(items, p)
+		profiles = append(profiles, p)
 	}
-	// Sort by name for consistency
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].(config.Profile).Name < items[j].(config.Profile).Name
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Name < profiles[j].Name
 	})
-	// Add Back option
-	items = append(items, "Back")
 
-	if len(items) == 1 { // Only "Back" option
+	var items []menuItem
+	for _, p := range profiles {
+		label := fmt.Sprintf("%s (%s)", p.Name, p.Email)
+		items = append(items, menuItem{Label: label, Profile: p, IsBack: false})
+	}
+	items = append(items, menuItem{Label: "Back", IsBack: true})
+
+	if len(items) == 1 { 
 		fmt.Println("No profiles found.")
-		prompt := promptui.Prompt{
-			Label: "Press Enter to go back",
-		}
-		prompt.Run()
+		waitUser()
 		return
 	}
 
 	templates := &promptui.SelectTemplates{
-		Label:    "{{ . }}",
-		Active:   "-> {{ if eq . \"Back\" }}{{ . | cyan }}{{ else }}{{ .Name | cyan }} ({{ .ProxyHost }}){{ end }}",
-		Inactive: "   {{ if eq . \"Back\" }}{{ . }}{{ else }}{{ .Name }} ({{ .ProxyHost }}){{ end }}",
-		Selected: "-> {{ if eq . \"Back\" }}{{ . | cyan }}{{ else }}{{ .Name | cyan }}{{ end }}",
+		Label:    "{{ .Label }}",
+		Active:   "-> {{ .Label | cyan }}",
+		Inactive: "   {{ .Label }}",
+		Selected: "-> {{ .Label | cyan }}",
 		Details: `
 --------- Profile Details ---------
-{{ if eq . "Back" }}
+{{ if .IsBack }}
 Go back to main menu
 {{ else }}
-{{ "Name:" | faint }}	{{ .Name }}
-{{ "Email:" | faint }}	{{ .Email }}
-{{ "Proxy:" | faint }}	{{ .ProxyHost }}:{{ .ProxyPort }}
-{{ "Tunnel:" | faint }}	{{ .UseSystemTunnel }}
+{{ "Name:" | faint }}	{{ .Profile.Name }}
+{{ "Email:" | faint }}	{{ .Profile.Email }}
+{{ "Proxy:" | faint }}	{{ .Profile.ProxyHost }}:{{ .Profile.ProxyPort }}
+{{ "Tunnel:" | faint }}	{{ .Profile.UseSystemTunnel }}
 {{ end }}
 -----------------------------------`,
+		FuncMap: template.FuncMap{
+			"cyan":  promptui.FuncMap["cyan"],
+			"faint": promptui.FuncMap["faint"],
+		},
 	}
 
 	prompt := promptui.Select{
@@ -124,17 +185,17 @@ Go back to main menu
 		Stdout:    &BellSkipper{},
 	}
 
-	i, result, err := prompt.Run()
+	i, _, err := prompt.Run()
 	if err != nil {
 		return
 	}
 
-	if result == "Back" {
+	selectedItem := items[i]
+	if selectedItem.IsBack {
 		return
 	}
 
-	selectedProfile := items[i].(config.Profile)
-	handleProfileActions(selectedProfile, store)
+	handleProfileActions(selectedItem.Profile, store)
 }
 
 func handleProfileActions(profile config.Profile, store *config.Store) {
@@ -151,29 +212,30 @@ func handleProfileActions(profile config.Profile, store *config.Store) {
 
 	switch result {
 	case "Connect":
-		// Invoke connect command logic
-		connectCmd.SetArgs([]string{profile.Name})
-		err := connectCmd.Execute()
-		if err != nil {
-			fmt.Printf("\nError: %v\n", err)
+		// clearScreen() REMOVED
+		fmt.Printf("--- Launching Profile: %s ---\n", profile.Name)
+		if debugLogger != nil {
+			debugLogger.Printf("Calling RunConnect for %s", profile.Name)
 		}
-		// After connect returns (e.g. user stopped tunnel), we return to menu
-		fmt.Println("Press Enter to return to menu...")
-		fmt.Scanln()
+		err := RunConnect(profile.Name)
+		if err != nil {
+			if debugLogger != nil {
+				debugLogger.Printf("RunConnect error: %v", err)
+			}
+			fmt.Printf("\n❌ ERROR: %v\n", err)
+		}
+		waitUser()
 
 	case "Login":
-		// Invoke login command logic
 		if loginCmd != nil {
-			loginCmd.SetArgs([]string{profile.Name})
-			err := loginCmd.Execute()
+			err := loginCmd.RunE(loginCmd, []string{profile.Name})
 			if err != nil {
-				fmt.Printf("\nError: %v\n", err)
+				fmt.Printf("\n❌ Error: %v\n", err)
 			}
 		} else {
 			fmt.Println("Login command not available.")
 		}
-		fmt.Println("Press Enter to continue...")
-		fmt.Scanln()
+		waitUser()
 
 	case "Delete":
 		confirmPrompt := promptui.Prompt{
@@ -182,16 +244,14 @@ func handleProfileActions(profile config.Profile, store *config.Store) {
 		}
 		_, err := confirmPrompt.Run()
 		if err == nil {
-			// User confirmed
 			delete(store.Profiles, profile.Name)
-			// We need to save manually since store.RemoveProfile might not exist or be accessible
-			// store.Save() handles encryption
 			if err := store.Save(); err != nil {
 				fmt.Printf("Error deleting profile: %v\n", err)
 			} else {
 				fmt.Println("Profile deleted.")
 			}
 		}
+		waitUser()
 
 	case "Back":
 		return
@@ -200,16 +260,14 @@ func handleProfileActions(profile config.Profile, store *config.Store) {
 
 func handleAddAccount() {
 	// Wizard
-	// 1. Proxy Type
 	proxyTypePrompt := promptui.Select{
 		Label: "Proxy Type",
 		Items: []string{"socks5", "http"},
 		Stdout: &BellSkipper{},
 	}
 	_, proxyType, err := proxyTypePrompt.Run()
-	if err != nil { return } // Handles Ctrl+C (ErrInterrupt)
+	if err != nil { return }
 
-	// 2. Proxy Host
 	proxyHostPrompt := promptui.Prompt{
 		Label: "Proxy Host",
 		Validate: func(input string) error {
@@ -220,7 +278,6 @@ func handleAddAccount() {
 	proxyHost, err := proxyHostPrompt.Run()
 	if err != nil { return }
 
-	// 3. Proxy Port
 	proxyPortPrompt := promptui.Prompt{
 		Label: "Proxy Port",
 		Validate: func(input string) error {
@@ -233,14 +290,12 @@ func handleAddAccount() {
 	if err != nil { return }
 	proxyPort, _ := strconv.Atoi(proxyPortStr)
 
-	// 4. Proxy User
 	proxyUserPrompt := promptui.Prompt{
 		Label: "Proxy User",
 	}
 	proxyUser, err := proxyUserPrompt.Run()
 	if err != nil { return }
 
-	// 5. Proxy Password
 	proxyPassPrompt := promptui.Prompt{
 		Label: "Proxy Password",
 		Mask: '*',
@@ -248,7 +303,6 @@ func handleAddAccount() {
 	proxyPass, err := proxyPassPrompt.Run()
 	if err != nil { return }
 
-	// 6. Use System Tunnel?
 	sysTunnelPrompt := promptui.Select{
 		Label: "Use System Tunnel?",
 		Items: []string{"Yes", "No"},
@@ -256,9 +310,8 @@ func handleAddAccount() {
 	}
 	_, sysTunnelRes, err := sysTunnelPrompt.Run()
 	if err != nil { return }
-	useSysTunnel := (sysTunnelRes == "Yes")
+	isSystemTunnel := (sysTunnelRes == "Yes")
 
-	// 7. Profile Name
 	namePrompt := promptui.Prompt{
 		Label: "Profile Name",
 		Validate: func(input string) error {
@@ -269,14 +322,12 @@ func handleAddAccount() {
 	name, err := namePrompt.Run()
 	if err != nil { return }
 
-	// 8. Google Email
 	emailPrompt := promptui.Prompt{
 		Label: "Google Email",
 	}
 	email, err := emailPrompt.Run()
 	if err != nil { return }
 
-	// Save
 	newProfile := config.Profile{
 		Name:            name,
 		Email:           email,
@@ -285,12 +336,14 @@ func handleAddAccount() {
 		ProxyPort:       proxyPort,
 		ProxyUser:       proxyUser,
 		ProxyPass:       proxyPass,
-		UseSystemTunnel: useSysTunnel,
+		UseSystemTunnel: isSystemTunnel,
+		AccessToken:     "pending_auth",
+		RefreshToken:    "pending_auth",
+		ExpiryTimestamp: 0,
 	}
 
 	homeDir, _ := os.UserHomeDir()
 	store := config.NewStore(filepath.Join(homeDir, ".antigravity-cli", "profiles.json"))
-	// Load first to not overwrite others
 	store.Load()
 	
 	if err := store.AddProfile(newProfile); err != nil {
@@ -299,9 +352,7 @@ func handleAddAccount() {
 		fmt.Println("Profile saved successfully!")
 	}
 	
-	// Wait a bit
-	fmt.Println("Press Enter to continue...")
-	fmt.Scanln()
+	waitUser()
 }
 
 func clearScreen() {
@@ -315,24 +366,19 @@ func clearScreen() {
 	cmd.Run()
 }
 
-// BellSkipper implements an io.WriteCloser that skips the bell character (\a).
-// This prevents annoying sounds on Windows terminals during navigation.
 type BellSkipper struct{}
 
 func (bs *BellSkipper) Write(b []byte) (int, error) {
-	const bell = 7 // ASCII \a
+	const bell = 7
 	if len(b) == 1 && b[0] == bell {
 		return 0, nil
 	}
-	// For larger chunks, filter out bells
-	// This is a bit expensive for large writes but efficient enough for TUI
 	var filtered []byte
 	for _, byteVal := range b {
 		if byteVal != bell {
 			filtered = append(filtered, byteVal)
 		}
 	}
-	// Note: We return len(b) to pretend we wrote everything, to satisfy io.Writer contract
 	_, err := os.Stdout.Write(filtered)
 	return len(b), err
 }
@@ -341,12 +387,125 @@ func (bs *BellSkipper) Close() error {
 	return nil
 }
 
-// Helper to get a configured Select with suppressed bell
-func newSelect(label string, items interface{}, templates *promptui.SelectTemplates) promptui.Select {
-	return promptui.Select{
-		Label:     label,
+// runSessionMenu displays the session control menu during an active connection
+func runSessionMenu(sess *session.Session, store *config.Store) {
+	for {
+		fmt.Printf("\n🔒 Connected: %s\n", sess.ProfileName())
+
+		prompt := promptui.Select{
+			Label: "Session Menu",
+			Items: []string{
+				"🔄 Switch Account",
+				"📊 Check Status",
+				"🚪 Disconnect",
+			},
+			Templates: &promptui.SelectTemplates{
+				Active:   "-> {{ . | cyan }}",
+				Inactive: "   {{ . }}",
+				Selected: "-> {{ . | cyan }}",
+			},
+			HideSelected: true,
+			Stdout:       &BellSkipper{},
+		}
+
+		_, result, err := prompt.Run()
+		if err != nil {
+			if err == promptui.ErrInterrupt {
+				return // Exit on Ctrl+C
+			}
+			fmt.Printf("Prompt error: %v\n", err)
+			continue
+		}
+
+		switch result {
+		case "🔄 Switch Account":
+			newProfile := selectProfileForSwitch(store, sess.ProfileName())
+			if newProfile != nil {
+				if err := sess.SwitchProfile(*newProfile); err != nil {
+					fmt.Printf("❌ Switch failed: %v\n", err)
+					waitUser()
+				}
+			}
+
+		case "📊 Check Status":
+			sess.ShowStatus()
+			waitUser()
+
+		case "🚪 Disconnect":
+			return
+		}
+	}
+}
+
+// selectProfileForSwitch shows a profile picker for switching
+func selectProfileForSwitch(store *config.Store, currentProfile string) *config.Profile {
+	// Reload profiles
+	if err := store.Load(); err != nil {
+		fmt.Printf("Error loading profiles: %v\n", err)
+		return nil
+	}
+
+	var profiles []config.Profile
+	for _, p := range store.Profiles {
+		if p.Name != currentProfile { // Exclude current profile
+			profiles = append(profiles, p)
+		}
+	}
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Name < profiles[j].Name
+	})
+
+	if len(profiles) == 0 {
+		fmt.Println("No other profiles available.")
+		waitUser()
+		return nil
+	}
+
+	var items []menuItem
+	for _, p := range profiles {
+		label := fmt.Sprintf("%s (%s)", p.Name, p.Email)
+		items = append(items, menuItem{Label: label, Profile: p, IsBack: false})
+	}
+	items = append(items, menuItem{Label: "Cancel", IsBack: true})
+
+	templates := &promptui.SelectTemplates{
+		Label:    "{{ .Label }}",
+		Active:   "-> {{ .Label | cyan }}",
+		Inactive: "   {{ .Label }}",
+		Selected: "-> {{ .Label | cyan }}",
+		Details: `
+--------- Profile Details ---------
+{{ if .IsBack }}
+Cancel and go back
+{{ else }}
+{{ "Name:" | faint }}	{{ .Profile.Name }}
+{{ "Email:" | faint }}	{{ .Profile.Email }}
+{{ "Proxy:" | faint }}	{{ .Profile.ProxyHost }}:{{ .Profile.ProxyPort }}
+{{ end }}
+-----------------------------------`,
+		FuncMap: template.FuncMap{
+			"cyan":  promptui.FuncMap["cyan"],
+			"faint": promptui.FuncMap["faint"],
+		},
+	}
+
+	prompt := promptui.Select{
+		Label:     "Select Profile to Switch",
 		Items:     items,
 		Templates: templates,
+		Size:      10,
 		Stdout:    &BellSkipper{},
 	}
+
+	i, _, err := prompt.Run()
+	if err != nil {
+		return nil
+	}
+
+	selectedItem := items[i]
+	if selectedItem.IsBack {
+		return nil
+	}
+
+	return &selectedItem.Profile
 }

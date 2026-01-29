@@ -73,7 +73,7 @@ func SyncFromIDE() (*Account, error) {
 }
 
 // InjectIdentity injects the access and refresh tokens into the antigravity database.
-// It performs aggressive cleanup to prevent account linking.
+// It creates a fresh protobuf structure with the new tokens.
 func InjectIdentity(dbPath, accessToken, refreshToken, email, name string) error {
 	// 1. Connect to SQLite
 	db, err := sql.Open("sqlite", dbPath)
@@ -116,29 +116,15 @@ func InjectIdentity(dbPath, accessToken, refreshToken, email, name string) error
 		return fmt.Errorf("failed to insert antigravityOnboarding: %w", err)
 	}
 
-	// 6. Find and update protobuf record
-	var valueBase64 string
-	err = db.QueryRow("SELECT value FROM ItemTable WHERE key = ?", "jetskiStateSync.agentManagerInitState").Scan(&valueBase64)
+	// 6. Create fresh protobuf with OAuth tokens
+	expiry := time.Now().Add(24 * time.Hour).Unix()
+	newProtobuf := CreateOAuthTokenInfo(accessToken, refreshToken, expiry)
+	newBase64 := base64.StdEncoding.EncodeToString(newProtobuf)
 
-	if err == sql.ErrNoRows {
-		// Record doesn't exist - that's okay, we've already set auth status above
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to query ItemTable: %w", err)
-	}
-
-	// 7. Decode and replace field 6 in protobuf
-	data, err := base64.StdEncoding.DecodeString(valueBase64)
+	// 7. Insert or replace the protobuf record
+	_, err = db.Exec("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", "jetskiStateSync.agentManagerInitState", newBase64)
 	if err != nil {
-		return fmt.Errorf("failed to decode base64 value: %w", err)
-	}
-
-	newData := replaceProtobufField6(data, accessToken, refreshToken)
-	newBase64 := base64.StdEncoding.EncodeToString(newData)
-
-	_, err = db.Exec("UPDATE ItemTable SET value = ? WHERE key = ?", newBase64, "jetskiStateSync.agentManagerInitState")
-	if err != nil {
-		return fmt.Errorf("failed to update ItemTable: %w", err)
+		return fmt.Errorf("failed to insert protobuf: %w", err)
 	}
 
 	return nil

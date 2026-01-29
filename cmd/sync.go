@@ -3,7 +3,6 @@ package cmd
 import (
 	"antigravity-cli/internal/injection"
 	"fmt"
-	"log"
 
 	"github.com/spf13/cobra"
 )
